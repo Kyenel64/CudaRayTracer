@@ -1,5 +1,6 @@
 #include <iostream>
 #include <chrono>
+#include <curand_kernel.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -19,6 +20,10 @@ struct Properties
     int num_pixels = image_width * image_height;
     size_t fb_size = 3 * num_pixels * sizeof(float); // rgb * numpixels * size of float
 
+    // Render properties
+    const int samples_per_pixel = 100;
+    const int maxDepth = 10;
+
     // Camera properties
     double viewport_height = 2.0;
     double viewport_width = aspect_ratio * viewport_height;
@@ -30,12 +35,38 @@ struct Properties
 
 };
 
-// Write color to array
-__device__ void write_color(unsigned char *fb, int pixel_index, color pixel_color) \
+// Error checking
+#define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
+
+void check_cuda(cudaError_t result, char const *const func, const char *const file, int const line)
 {
-    fb[pixel_index + 0] = int(255.99 * (pixel_color.x()));
-    fb[pixel_index + 1] = int(255.99 * (pixel_color.y()));
-    fb[pixel_index + 2] = int(255.99 * (pixel_color.z()));
+    if (result)
+    {
+        std::cerr << "CUDA error = " << static_cast<unsigned int>(result) << " at " <<
+            file << ":" << line << " '" << func << "' \n";
+        // Make sure we call CUDA Device Reset before exiting
+        cudaDeviceReset();
+        exit(99);
+    }
+}
+
+
+// Write color to array
+__device__ void write_color(unsigned char *fb, int pixel_index, color pixel_color, int samples_per_pixel) 
+{
+    auto r = pixel_color.x();
+    auto g = pixel_color.y();
+    auto b = pixel_color.z();
+
+    // Divide color by number of samples. Gamma correct.
+    auto scale = 1.0 / samples_per_pixel;
+    r = sqrt(scale * r);
+    g = sqrt(scale * g);
+    b = sqrt(scale * b);
+
+    fb[pixel_index + 0] = int(256 * clamp(r, 0.0, 0.999));
+    fb[pixel_index + 1] = int(256 * clamp(g, 0.0, 0.999));
+    fb[pixel_index + 2] = int(256 * clamp(b, 0.0, 0.999));
 }
 
 // Return color of pixel
@@ -53,8 +84,22 @@ __device__ color ray_color(const ray& r, hittable **world)
     return (1.0-t) * color(1.0, 1.0, 1.0) + t * color(0.5, 0.7, 1.0);
 }
 
+// Initializing values like random values before main render
+__global__ void render_init(int max_x, int max_y, curandState *rand_state)
+{
+    // x index and y index
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
+    if ((i >= max_x) || (j >= max_y)) 
+        return;
+    int pixel_index = j * max_x + i;
+
+    // Retrieve a random value for each thread
+    curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
+}
+
 // Main render
-__global__ void render(unsigned char *fb, Properties p, hittable **world)
+__global__ void render(unsigned char *fb, Properties p, hittable **world, curandState *rand_state)
 {
     // x index and y index
     int i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -62,12 +107,18 @@ __global__ void render(unsigned char *fb, Properties p, hittable **world)
     if ((i >= p.image_width) || (j >= p.image_height)) 
         return;
     int pixel_index = j * p.image_width * 3 + i * 3;
+    int rand_index = j * p.image_width + i;
+    curandState local_rand_state = rand_state[rand_index];
     // uv offset on viewport
-    float u = float(i) / float(p.image_width - 1);
-    float v = float(j) / float(p.image_height - 1);
-
-    ray r(p.origin, p.lower_left_corner + u * p.horizontal + v * p.vertical);
-    write_color(fb, pixel_index, ray_color(r, world));
+    color pixel_color;
+    for (int s = 0; s < p.samples_per_pixel; s++)
+    {
+        float u = float(i + curand_uniform(&local_rand_state)) / float(p.image_width - 1);
+        float v = float(j + curand_uniform(&local_rand_state)) / float(p.image_height - 1);
+        ray r(p.origin, p.lower_left_corner + u * p.horizontal + v * p.vertical);
+        pixel_color += ray_color(r, world);
+    }
+    write_color(fb, pixel_index, pixel_color, p.samples_per_pixel);
 }
 
 // Allocate world
@@ -102,14 +153,16 @@ int main()
     // -------------------- World -----------------------
     hittable **d_world;
     hittable **d_list;
-    cudaMalloc(&d_list, 2 * sizeof(hittable *));
-    cudaMalloc(&d_world, sizeof(hittable *));
+    checkCudaErrors(cudaMalloc(&d_list, 2 * sizeof(hittable *)));
+    checkCudaErrors(cudaMalloc(&d_world, sizeof(hittable *)));
     create_world<<<1, 1>>>(d_list, d_world);
-    cudaDeviceSynchronize();
+    checkCudaErrors(cudaDeviceSynchronize());
 
     // ---------------- memory allocation ---------------
     unsigned char *fb;
-    cudaMallocManaged(&fb, p.fb_size);
+    curandState *d_rand_state;
+    checkCudaErrors(cudaMallocManaged(&fb, p.fb_size));
+    checkCudaErrors(cudaMallocManaged(&d_rand_state, p.num_pixels * sizeof(curandState)));
 
     // Run render kernel with given sizes.
     dim3 blocks(p.image_width / tx + 1, p.image_height / ty + 1);
@@ -119,7 +172,10 @@ int main()
     auto start = std::chrono::high_resolution_clock::now();
 
     // -------------------- RENDER ----------------------
-    render<<<blocks, threads>>>(fb, p, d_world);
+
+    render_init<<<blocks, threads>>>(p.image_width, p.image_height, d_rand_state);
+    checkCudaErrors(cudaDeviceSynchronize());
+    render<<<blocks, threads>>>(fb, p, d_world, d_rand_state);
 
     // calculate time taken to render
     auto stop = std::chrono::high_resolution_clock::now();
@@ -127,14 +183,15 @@ int main()
     std::cerr << "\nFinished in: " << duration.count() / 1000.0 << "ms" << std::endl;
 
 
-    cudaDeviceSynchronize(); // wait for GPU to finish
+    checkCudaErrors(cudaDeviceSynchronize()); // wait for GPU to finish
     // write to jpg
     stbi_flip_vertically_on_write(true);
     stbi_write_jpg("image.jpg", p.image_width, p.image_height, 3, fb, 100);
     
     // free memory
     free_world<<<1, 1>>>(d_list, d_world);
-    cudaFree(fb);
-    cudaFree(d_list);
-    cudaFree(d_world);
+    checkCudaErrors(cudaFree(fb));
+    checkCudaErrors(cudaFree(d_list));
+    checkCudaErrors(cudaFree(d_world));
+    checkCudaErrors(cudaFree(d_rand_state));
 }
