@@ -9,7 +9,9 @@
 #include "hittable_list.cuh"
 #include "sphere.cuh"
 #include "camera.cuh"
+#include "material.cuh"
 
+#define object_count 4
 
 // Property variables
 struct Properties
@@ -22,7 +24,7 @@ struct Properties
     size_t fb_size = 3 * num_pixels * sizeof(float); // rgb * numpixels * size of float
 
     // Render properties
-    const int samples_per_pixel = 100;
+    const int samples_per_pixel = 300;
     const int max_depth = 10;
 
 };
@@ -63,22 +65,33 @@ __device__ void write_color(unsigned char *fb, int pixel_index, color pixel_colo
 
 // Return color of pixel
 __device__ vec3 ray_color(const ray& r, hittable **world, curandState *local_rand_state, Properties p) {
-   ray cur_ray = r;
-   float cur_attenuation = 1.0f;
-   for(int i = 0; i < p.max_depth; i++) {
-      hit_record rec;
-      if ((*world)->hit(cur_ray, 0.001f, FLT_MAX, rec)) {
-         vec3 target = rec.p + rec.normal + random_in_unit_sphere(local_rand_state);
-         cur_attenuation *= 0.5f;
-         cur_ray = ray(rec.p, target-rec.p);
-      }
-      else {
-           vec3 unit_direction = unit_vector(cur_ray.direction());
-           float t = 0.5f*(unit_direction.y() + 1.0f);
-           vec3 c = (1.0f-t)*vec3(1.0, 1.0, 1.0) + t*vec3(0.5, 0.7, 1.0);
-           return cur_attenuation * c;
+    ray cur_ray = r;
+    vec3 cur_attenuation = vec3(1, 1, 1);
+    for(int i = 0; i < p.max_depth; i++) 
+    {
+        hit_record rec;
+        if ((*world)->hit(cur_ray, 0.001f, FLT_MAX, rec)) 
+        {
+            ray scattered;
+            vec3 atteuation;
+            if (rec.mat_ptr->scatter(cur_ray, rec, atteuation, scattered, local_rand_state))
+            {
+                cur_attenuation *= atteuation;
+                cur_ray = scattered;
+            }
+            else
+            {
+                return vec3(0, 0, 0);
+            }
         }
-      }
+        else
+        {
+            vec3 unit_direction = unit_vector(cur_ray.direction());
+            float t = 0.5f*(unit_direction.y() + 1.0f);
+            vec3 c = (1.0f-t)*vec3(1.0, 1.0, 1.0) + t*vec3(0.5, 0.7, 1.0);
+            return cur_attenuation * c;
+        }
+    }
    return vec3(0.0,0.0,0.0); // exceeded recursion
 }
 
@@ -112,8 +125,8 @@ __global__ void render(unsigned char *fb, Properties p, hittable **world, curand
     color pixel_color;
     for (int s = 0; s < p.samples_per_pixel; s++)
     {
-        float u = float(i + curand_uniform(&local_rand_state)) / float(p.image_width - 1);
-        float v = float(j + curand_uniform(&local_rand_state)) / float(p.image_height - 1);
+        float u = float(i + curand_uniform(&local_rand_state)) / float(p.image_width);
+        float v = float(j + curand_uniform(&local_rand_state)) / float(p.image_height);
         ray r = (*camera)->get_ray(u, v);
         pixel_color += ray_color(r, world, &local_rand_state, p);
     }
@@ -128,9 +141,12 @@ __global__ void create_world(hittable **d_list, hittable **d_world, camera **d_c
     // Allocate new objects and world
     if (threadIdx.x == 0 && blockIdx.x == 0)
     {
-        *d_list = new sphere(vec3(0, 0, -1), 0.5);
-        *(d_list + 1) = new sphere(vec3(0, -100.5, -1), 100);
-        *d_world = new hittable_list(d_list, 2);
+        d_list[0] = new sphere(vec3(0, 0, -1), 0.5, new lambertian(vec3(0.8, 0.3, 0.3)));
+        d_list[1] = new sphere(vec3(0, 100.5, -1), 100, new lambertian(vec3(0.8, 0.8, 0.0)));
+        d_list[2] = new sphere(vec3(1, 0, -1), 0.5, new metal(vec3(0.8, 0.6, 0.2), 1.0));
+        d_list[3] = new sphere(vec3(-1, 0, -1), 0.5, new metal(vec3(0.8, 0.8, 0.8), 0.3));
+
+        *d_world = new hittable_list(d_list, object_count);
         *d_camera = new camera();
     }
 }
@@ -138,8 +154,11 @@ __global__ void create_world(hittable **d_list, hittable **d_world, camera **d_c
 // Deallocate world
 __global__ void free_world(hittable **d_list, hittable **d_world, camera **d_camera) 
 {
-    delete *(d_list);
-    delete *(d_list+1);
+    for (int i = 0; i < object_count; i++)
+    {
+        delete ((sphere *)d_list[i])->mat_ptr;
+        delete d_list[i];
+    }
     delete *d_world;
     delete *d_camera;
 }
@@ -155,7 +174,7 @@ int main()
 
     // -------------------- World -----------------------
     hittable **d_list;
-    checkCudaErrors(cudaMalloc(&d_list, 2 * sizeof(hittable *)));
+    checkCudaErrors(cudaMalloc(&d_list, object_count * sizeof(hittable *)));
     hittable **d_world;
     checkCudaErrors(cudaMalloc(&d_world, sizeof(hittable *)));
     camera **d_camera;
@@ -165,8 +184,8 @@ int main()
 
     // ---------------- memory allocation ---------------
     unsigned char *fb;
-    curandState *d_rand_state;
     checkCudaErrors(cudaMallocManaged(&fb, p.fb_size));
+    curandState *d_rand_state;
     checkCudaErrors(cudaMallocManaged(&d_rand_state, p.num_pixels * sizeof(curandState)));
 
     // Run render kernel with given sizes.
@@ -189,7 +208,7 @@ int main()
 
     checkCudaErrors(cudaDeviceSynchronize()); // wait for GPU to finish
     // write to jpg
-    stbi_flip_vertically_on_write(true);
+    //stbi_flip_vertically_on_write(true);
     stbi_write_jpg("renders/image.jpg", p.image_width, p.image_height, 3, fb, 100);
     
     // free memory
