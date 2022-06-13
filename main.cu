@@ -11,7 +11,7 @@
 #include "camera.cuh"
 #include "material.cuh"
 
-#define object_count 4
+#define object_count 5
 
 // Property variables
 struct Properties
@@ -76,6 +76,7 @@ __device__ vec3 ray_color(const ray& r, hittable **world, curandState *local_ran
             vec3 atteuation;
             if (rec.mat_ptr->scatter(cur_ray, rec, atteuation, scattered, local_rand_state))
             {
+                // multiply current color value by reflection albedo
                 cur_attenuation *= atteuation;
                 cur_ray = scattered;
             }
@@ -92,7 +93,7 @@ __device__ vec3 ray_color(const ray& r, hittable **world, curandState *local_ran
             return cur_attenuation * c;
         }
     }
-   return vec3(0.0,0.0,0.0); // exceeded recursion
+   return vec3(0, 0, 0); // exceeded recursion
 }
 
 // Initializing values like random values before main render
@@ -141,10 +142,11 @@ __global__ void create_world(hittable **d_list, hittable **d_world, camera **d_c
     // Allocate new objects and world
     if (threadIdx.x == 0 && blockIdx.x == 0)
     {
-        d_list[0] = new sphere(vec3(0, 0, -1), 0.5, new lambertian(vec3(0.8, 0.3, 0.3)));
-        d_list[1] = new sphere(vec3(0, 100.5, -1), 100, new lambertian(vec3(0.8, 0.8, 0.0)));
-        d_list[2] = new sphere(vec3(1, 0, -1), 0.5, new metal(vec3(0.8, 0.6, 0.2), 1.0));
-        d_list[3] = new sphere(vec3(-1, 0, -1), 0.5, new metal(vec3(0.8, 0.8, 0.8), 0.3));
+        d_list[0] = new sphere(vec3(0, 0, -1), 0.5, new lambertian(vec3(204, 77, 77)));
+        d_list[1] = new sphere(vec3(0, -100.5, -1), 100, new lambertian(vec3(204, 204, 0)));
+        d_list[2] = new sphere(vec3(1, 0, -1), 0.5, new metal(vec3(204, 180, 66), 0.5));
+        d_list[3] = new sphere(vec3(-1, 0, -1), 0.5, new dielectric(1.5));
+        d_list[4] = new sphere(vec3(-1, 0, -1), -0.4, new dielectric(1.5));
 
         *d_world = new hittable_list(d_list, object_count);
         *d_camera = new camera();
@@ -208,7 +210,7 @@ int main()
 
     checkCudaErrors(cudaDeviceSynchronize()); // wait for GPU to finish
     // write to jpg
-    //stbi_flip_vertically_on_write(true);
+    stbi_flip_vertically_on_write(true);
     stbi_write_jpg("renders/image.jpg", p.image_width, p.image_height, 3, fb, 100);
     
     // free memory
