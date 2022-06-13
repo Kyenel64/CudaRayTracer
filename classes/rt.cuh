@@ -9,11 +9,11 @@
 
 // Utility Functions
 
-__device__ inline double degrees_to_radians(double degrees) {
+__device__ inline float degrees_to_radians(float degrees) {
     return degrees * pi / 180.0;
 }
 
-__device__ inline double clamp(double x, double min, double max)
+__device__ inline float clamp(float x, float min, float max)
 {
     if (x < min) return min;
     if (x > max) return max;

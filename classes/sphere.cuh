@@ -8,30 +8,30 @@ class sphere : public hittable
 {
 public:
     __device__ sphere() {}
-    __device__ sphere(point3 cen, double r) : center(cen), radius(r) {};
+    __device__ sphere(point3 cen, float r) : center(cen), radius(r) {};
 
-    __device__ virtual bool hit(const ray& r, double t_min, double t_max, hit_record& rec) const override;
+    __device__ virtual bool hit(const ray& r, float t_min, float t_max, hit_record& rec) const override;
 
 public:
     point3 center;
-    double radius;
+    float radius;
 };
 
-__device__ bool sphere::hit(const ray& r, double t_min, double t_max, hit_record& rec) const
+__device__ bool sphere::hit(const ray& r, float t_min, float t_max, hit_record& rec) const
 {
     // Sphere equation to detect hit
     vec3 oc = r.origin() - center;
-    auto a = r.direction().length_squared();
-    auto half_b = dot(oc, r.direction());
-    auto c = oc.length_squared() - radius * radius;
+    float a = r.direction().length_squared();
+    float half_b = dot(oc, r.direction());
+    float c = oc.length_squared() - radius * radius;
 
-    auto discriminant = half_b * half_b - a * c;
+    float discriminant = half_b * half_b - a * c;
     if (discriminant < 0) 
         return false;
-    auto sqrtd = sqrt(discriminant);
+    float sqrtd = sqrt(discriminant);
 
     // Find nearest root
-    auto root = (-half_b - sqrtd) / a;
+    float root = (-half_b - sqrtd) / a;
     if (root < t_min || t_max < root)
     {
         root = (-half_b + sqrtd) / a;
