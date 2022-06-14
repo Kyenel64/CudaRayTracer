@@ -170,4 +170,15 @@ __device__ inline vec3 refract(const vec3& uv, const vec3& n, double etai_over_e
     return r_out_perp + r_out_parallel;
 }
 
+__device__ inline vec3 random_in_unit_disk(curandState *local_rand_state)
+{
+    vec3 p;
+    do
+    {
+        p = 2.0f * vec3(curand_uniform(local_rand_state), curand_uniform(local_rand_state), 0) - vec3(1, 1, 0);
+    } while (dot(p, p) >= 1.0f);
+    return p;
+    
+}
+
 #endif

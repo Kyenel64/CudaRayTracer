@@ -11,7 +11,13 @@
 #include "camera.cuh"
 #include "material.cuh"
 
-#define object_count 5
+#define RANDOMWORLD
+#ifndef RANDOMWORLD
+    #define object_count 4
+#else
+    #define object_count 20
+#endif
+
 
 // Property variables
 struct Properties
@@ -23,8 +29,16 @@ struct Properties
     int num_pixels = image_width * image_height;
     size_t fb_size = 3 * num_pixels * sizeof(float); // rgb * numpixels * size of float
 
+    // Camera properties
+    point3 origin = point3(13, 2, 3);
+    point3 lookAt = point3(0, 0, 0);
+    vec3 up = vec3(0, 1, 0);
+    float fov = 20.0;
+    float aperture = 0.1;
+    float dist_to_focus = 10.0;
+
     // Render properties
-    const int samples_per_pixel = 300;
+    const int samples_per_pixel = 100;
     const int max_depth = 10;
 
 };
@@ -128,7 +142,7 @@ __global__ void render(unsigned char *fb, Properties p, hittable **world, curand
     {
         float u = float(i + curand_uniform(&local_rand_state)) / float(p.image_width);
         float v = float(j + curand_uniform(&local_rand_state)) / float(p.image_height);
-        ray r = (*camera)->get_ray(u, v);
+        ray r = (*camera)->get_ray(u, v, &local_rand_state);
         pixel_color += ray_color(r, world, &local_rand_state, p);
     }
 
@@ -137,20 +151,52 @@ __global__ void render(unsigned char *fb, Properties p, hittable **world, curand
 }
 
 // Allocate world
-__global__ void create_world(hittable **d_list, hittable **d_world, camera **d_camera)
+__global__ void create_world(hittable **d_list, hittable **d_world, camera **d_camera, Properties p)
 {
     // Allocate new objects and world
+    #ifndef RANDOMWORLD
     if (threadIdx.x == 0 && blockIdx.x == 0)
     {
         d_list[0] = new sphere(vec3(0, 0, -1), 0.5, new lambertian(vec3(204, 77, 77)));
         d_list[1] = new sphere(vec3(0, -100.5, -1), 100, new lambertian(vec3(204, 204, 0)));
         d_list[2] = new sphere(vec3(1, 0, -1), 0.5, new metal(vec3(204, 180, 66), 0.5));
         d_list[3] = new sphere(vec3(-1, 0, -1), 0.5, new dielectric(1.5));
-        d_list[4] = new sphere(vec3(-1, 0, -1), -0.4, new dielectric(1.5));
-
-        *d_world = new hittable_list(d_list, object_count);
-        *d_camera = new camera();
+        //d_list[4] = new sphere(vec3(-1, 0, -1), -0.4, new dielectric(1.5));
     }
+    #else
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        d_list[0] = new sphere(vec3(0, -1000, 0), 1000, new lambertian(vec3(122, 122, 122)));
+        d_list[1] = new sphere(vec3(0, 1, 0), 1, new dielectric(1.5));
+        d_list[2] = new sphere(vec3(4, 1, -0.5), 1, new metal(vec3(255, 215, 150), 0));
+        d_list[3] = new sphere(vec3(-4, 1, 0.5), 1, new lambertian(vec3(165, 42, 42)));
+
+        d_list[4] = new sphere(vec3(4, 0.2, 0.5), 0.2, new lambertian(vec3(165, 42, 42)));
+        d_list[5] = new sphere(vec3(6, 0.2, 0.5), 0.2, new lambertian(vec3(165, 100, 42)));
+        d_list[6] = new sphere(vec3(2, 0.2, 1.5), 0.2, new lambertian(vec3(100, 42, 142)));
+        d_list[7] = new sphere(vec3(1, 0.2, 2), 0.2, new lambertian(vec3(165, 142, 142)));
+        d_list[8] = new sphere(vec3(5, 0.2, 2.5), 0.2, new lambertian(vec3(65, 142, 242)));
+        d_list[9] = new sphere(vec3(6, 0.2, 3), 0.2, new lambertian(vec3(265, 42, 242)));
+        
+
+        d_list[10] = new sphere(vec3(3.5, 0.2, 1.5), 0.2, new metal(vec3(150, 100, 50), 0.5));
+        d_list[11] = new sphere(vec3(-1.4, 0.2, 3.2), 0.2, new metal(vec3(50, 100, 150), 0.3));
+        d_list[12] = new sphere(vec3(5.6, 0.2, 1.5), 0.2, new metal(vec3(150, 150, 150), 1.0));
+        d_list[13] = new sphere(vec3(2.4, 0.2, 2.8), 0.2, new metal(vec3(250, 250, 20), 0.4));
+        d_list[14] = new sphere(vec3(4.4, 0.2, 1.3), 0.2, new metal(vec3(150, 50, 150), 0.1));
+        d_list[15] = new sphere(vec3(5.4, 0.2, -1.3), 0.2, new metal(vec3(100, 120, 180), 0.1));
+        d_list[16] = new sphere(vec3(-2.5, 0.2, 2.3), 0.2, new metal(vec3(150, 250, 250), 0.1));
+        d_list[17] = new sphere(vec3(-4.5, 0.2, 2.5), 0.2, new metal(vec3(150, 50, 150), 0.1));
+
+        d_list[18] = new sphere(vec3(1.7, 0.2, 0.6), 0.2, new dielectric(1.5));
+        d_list[19] = new sphere(vec3(6.4, 0.2, 0.0), 0.2, new dielectric(0.5));
+
+    }
+    #endif
+
+    *d_world = new hittable_list(d_list, object_count);
+    *d_camera = new camera(p.origin, p.lookAt, p.up, p.fov, p.aspect_ratio, p.aperture, p.dist_to_focus);
+
 }
 
 // Deallocate world
@@ -181,7 +227,7 @@ int main()
     checkCudaErrors(cudaMalloc(&d_world, sizeof(hittable *)));
     camera **d_camera;
     checkCudaErrors(cudaMalloc(&d_camera, sizeof(camera*)));
-    create_world<<<1, 1>>>(d_list, d_world, d_camera);
+    create_world<<<1, 1>>>(d_list, d_world, d_camera, p);
     checkCudaErrors(cudaDeviceSynchronize());
 
     // ---------------- memory allocation ---------------
